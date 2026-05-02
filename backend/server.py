@@ -12,6 +12,13 @@ import uuid
 from datetime import datetime, timezone
 import httpx
 import asyncio
+from fastapi import Request
+from emergentintegrations.payments.stripe.checkout import (
+    StripeCheckout,
+    CheckoutSessionResponse,
+    CheckoutStatusResponse,
+    CheckoutSessionRequest,
+)
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -62,10 +69,22 @@ class LatLng(BaseModel):
 class RouteRequest(BaseModel):
     origin: LatLng
     destination: LatLng
+    alternatives: bool = False
 
 class RouteAnalysisRequest(BaseModel):
     coordinates: List[List[float]]  # [[lat, lng], ...]
     profile: Optional[TruckProfile] = None
+
+# Subscription
+SUBSCRIPTION_PLANS = {
+    "yearly_haulsafe": {"amount": 120.00, "currency": "gbp", "label": "HaulSafe Yearly", "days": 365},
+}
+TRIAL_DAYS = 7
+
+class CheckoutCreateRequest(BaseModel):
+    device_id: str
+    plan_id: str = "yearly_haulsafe"
+    origin_url: str
 
 # ---------- Helpers ----------
 def haversine_km(a: Tuple[float, float], b: Tuple[float, float]) -> float:
@@ -148,6 +167,8 @@ async def route(req: RouteRequest):
     coords = f"{req.origin.lng},{req.origin.lat};{req.destination.lng},{req.destination.lat}"
     url = f"https://router.project-osrm.org/route/v1/driving/{coords}"
     params = {"overview": "full", "geometries": "geojson", "steps": "true", "annotations": "false"}
+    if req.alternatives:
+        params["alternatives"] = "true"
     try:
         async with httpx.AsyncClient(timeout=20.0) as cli:
             r = await cli.get(url, params=params)
@@ -155,27 +176,31 @@ async def route(req: RouteRequest):
             data = r.json()
         if not data.get("routes"):
             raise HTTPException(status_code=404, detail="No route found")
-        rt = data["routes"][0]
-        # Convert geojson [lng, lat] -> [lat, lng]
-        geometry = [[c[1], c[0]] for c in rt["geometry"]["coordinates"]]
-        steps = []
-        for leg in rt.get("legs", []):
-            for s in leg.get("steps", []):
-                m = s.get("maneuver", {})
-                steps.append({
-                    "instruction": f"{m.get('type', 'continue').replace('_', ' ').title()} on {s.get('name') or 'road'}",
-                    "type": m.get("type", "continue"),
-                    "modifier": m.get("modifier"),
-                    "distance_m": s.get("distance", 0),
-                    "duration_s": s.get("duration", 0),
-                    "name": s.get("name", ""),
-                })
-        return {
-            "geometry": geometry,
-            "distance_m": rt.get("distance", 0),
-            "duration_s": rt.get("duration", 0),
-            "steps": steps,
-        }
+
+        def parse_route(rt):
+            geometry = [[c[1], c[0]] for c in rt["geometry"]["coordinates"]]
+            steps = []
+            for leg in rt.get("legs", []):
+                for s in leg.get("steps", []):
+                    m = s.get("maneuver", {})
+                    steps.append({
+                        "instruction": f"{m.get('type', 'continue').replace('_', ' ').title()} on {s.get('name') or 'road'}",
+                        "type": m.get("type", "continue"),
+                        "modifier": m.get("modifier"),
+                        "distance_m": s.get("distance", 0),
+                        "duration_s": s.get("duration", 0),
+                        "name": s.get("name", ""),
+                    })
+            return {
+                "geometry": geometry,
+                "distance_m": rt.get("distance", 0),
+                "duration_s": rt.get("duration", 0),
+                "steps": steps,
+            }
+
+        primary = parse_route(data["routes"][0])
+        alternatives = [parse_route(rt) for rt in data["routes"][1:]] if req.alternatives else []
+        return {**primary, "alternatives": alternatives}
     except HTTPException:
         raise
     except Exception as e:
@@ -362,6 +387,102 @@ async def route_analysis(req: RouteAnalysisRequest):
         "summary": summary,
     }
 
+
+app.include_router(api_router)
+
+@api_router.get("/subscription/{device_id}")
+async def get_subscription(device_id: str):
+    sub = await db.subscriptions.find_one({"device_id": device_id}, {"_id": 0})
+    now = datetime.now(timezone.utc)
+    if not sub:
+        # Auto-start trial
+        trial_end = now + __import__("datetime").timedelta(days=TRIAL_DAYS)
+        sub = {"device_id": device_id, "status": "trial", "trial_ends_at": trial_end, "expires_at": trial_end, "created_at": now}
+        await db.subscriptions.insert_one(sub.copy())
+        sub.pop("_id", None)
+    expires_at = sub.get("expires_at")
+    active = expires_at is not None and (expires_at if isinstance(expires_at, datetime) else datetime.fromisoformat(str(expires_at).replace("Z",""))) > now
+    return {
+        "device_id": device_id,
+        "status": sub.get("status", "expired") if active else "expired",
+        "active": active,
+        "expires_at": expires_at.isoformat() if isinstance(expires_at, datetime) else expires_at,
+        "is_trial": sub.get("status") == "trial" and active,
+    }
+
+@api_router.post("/payments/checkout/session")
+async def create_checkout(req: CheckoutCreateRequest, http_request: Request):
+    if req.plan_id not in SUBSCRIPTION_PLANS:
+        raise HTTPException(status_code=400, detail="Invalid plan")
+    plan = SUBSCRIPTION_PLANS[req.plan_id]
+    api_key = os.environ.get("STRIPE_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="Stripe not configured")
+    host = str(http_request.base_url).rstrip("/")
+    stripe = StripeCheckout(api_key=api_key, webhook_url=f"{host}/api/webhook/stripe")
+    success_url = f"{req.origin_url}/map?session_id={{CHECKOUT_SESSION_ID}}"
+    cancel_url = f"{req.origin_url}/map?cancelled=1"
+    metadata = {"device_id": req.device_id, "plan_id": req.plan_id, "source": "haulsafe_app"}
+    creq = CheckoutSessionRequest(
+        amount=plan["amount"], currency=plan["currency"],
+        success_url=success_url, cancel_url=cancel_url, metadata=metadata,
+    )
+    session: CheckoutSessionResponse = await stripe.create_checkout_session(creq)
+    await db.payment_transactions.insert_one({
+        "session_id": session.session_id, "device_id": req.device_id, "plan_id": req.plan_id,
+        "amount": plan["amount"], "currency": plan["currency"], "payment_status": "initiated",
+        "status": "pending", "metadata": metadata, "created_at": datetime.now(timezone.utc),
+    })
+    return {"url": session.url, "session_id": session.session_id}
+
+@api_router.get("/payments/checkout/status/{session_id}")
+async def checkout_status(session_id: str, http_request: Request):
+    api_key = os.environ.get("STRIPE_API_KEY")
+    host = str(http_request.base_url).rstrip("/")
+    stripe = StripeCheckout(api_key=api_key, webhook_url=f"{host}/api/webhook/stripe")
+    status: CheckoutStatusResponse = await stripe.get_checkout_status(session_id)
+    tx = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
+    if tx and tx.get("payment_status") != "paid" and status.payment_status == "paid":
+        await db.payment_transactions.update_one(
+            {"session_id": session_id},
+            {"$set": {"payment_status": status.payment_status, "status": status.status}},
+        )
+        device_id = (tx.get("metadata") or {}).get("device_id") or tx.get("device_id")
+        plan_id = (tx.get("metadata") or {}).get("plan_id", "yearly_haulsafe")
+        days = SUBSCRIPTION_PLANS.get(plan_id, {}).get("days", 365)
+        from datetime import timedelta
+        expires_at = datetime.now(timezone.utc) + timedelta(days=days)
+        await db.subscriptions.update_one(
+            {"device_id": device_id},
+            {"$set": {"status": "active", "expires_at": expires_at, "plan_id": plan_id, "device_id": device_id}},
+            upsert=True,
+        )
+    return {"payment_status": status.payment_status, "status": status.status, "amount_total": status.amount_total, "currency": status.currency}
+
+@api_router.post("/webhook/stripe")
+async def stripe_webhook(request: Request):
+    body = await request.body()
+    api_key = os.environ.get("STRIPE_API_KEY")
+    host = str(request.base_url).rstrip("/")
+    stripe = StripeCheckout(api_key=api_key, webhook_url=f"{host}/api/webhook/stripe")
+    try:
+        ev = await stripe.handle_webhook(body, request.headers.get("Stripe-Signature"))
+    except Exception as e:
+        logger.warning(f"webhook error: {e}")
+        return {"ok": False}
+    if ev.payment_status == "paid":
+        device_id = (ev.metadata or {}).get("device_id")
+        plan_id = (ev.metadata or {}).get("plan_id", "yearly_haulsafe")
+        if device_id:
+            from datetime import timedelta
+            days = SUBSCRIPTION_PLANS.get(plan_id, {}).get("days", 365)
+            await db.subscriptions.update_one(
+                {"device_id": device_id},
+                {"$set": {"status": "active", "expires_at": datetime.now(timezone.utc) + timedelta(days=days), "plan_id": plan_id, "device_id": device_id}},
+                upsert=True,
+            )
+            await db.payment_transactions.update_one({"session_id": ev.session_id}, {"$set": {"payment_status": "paid", "status": "complete"}})
+    return {"ok": True}
 
 app.include_router(api_router)
 

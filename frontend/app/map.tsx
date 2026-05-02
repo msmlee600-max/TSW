@@ -161,16 +161,57 @@ export default function MapScreen() {
   const [webReady, setWebReady] = useState(false);
   const [showSheet, setShowSheet] = useState(true);
   const [profile, setProfile] = useState<any>(null);
+  const [altRoute, setAltRoute] = useState<RouteResp | null>(null);
+  const [altWarnings, setAltWarnings] = useState<Warning[]>([]);
+  const [showSafer, setShowSafer] = useState(false);
+  const [sub, setSub] = useState<{ active: boolean; status: string; is_trial: boolean; expires_at: string } | null>(null);
+  const [showPaywall, setShowPaywall] = useState(false);
+  const [paying, setPaying] = useState(false);
+
+  const refreshSub = async (deviceId: string) => {
+    try {
+      const r = await fetch(`${BACKEND_URL}/api/subscription/${deviceId}`);
+      if (r.ok) setSub(await r.json());
+    } catch {}
+  };
 
   useEffect(() => {
     (async () => {
-      const id = (await AsyncStorage.getItem("device_id")) || "";
-      if (!id) return;
+      let id = await AsyncStorage.getItem("device_id");
+      if (!id) {
+        id = "dev_" + Math.random().toString(36).slice(2, 12) + Date.now().toString(36);
+        await AsyncStorage.setItem("device_id", id);
+      }
       try {
         const r = await fetch(`${BACKEND_URL}/api/truck-profile/${id}`);
         if (r.ok) setProfile(await r.json());
       } catch {}
+      refreshSub(id);
     })();
+
+    // Detect Stripe return on web
+    if (isWeb && typeof window !== "undefined") {
+      const params = new URLSearchParams(window.location.search);
+      const sid = params.get("session_id");
+      if (sid) {
+        (async () => {
+          for (let i = 0; i < 8; i++) {
+            try {
+              const r = await fetch(`${BACKEND_URL}/api/payments/checkout/status/${sid}`);
+              const d = await r.json();
+              if (d.payment_status === "paid") {
+                const id = await AsyncStorage.getItem("device_id");
+                if (id) await refreshSub(id);
+                window.history.replaceState({}, "", "/map");
+                return;
+              }
+              if (d.status === "expired") return;
+            } catch {}
+            await new Promise((res) => setTimeout(res, 2000));
+          }
+        })();
+      }
+    }
   }, []);
 
   // Debounced geocode
@@ -218,9 +259,16 @@ export default function MapScreen() {
   }, []);
 
   const planRoute = async (dest: GeoResult) => {
+    if (sub && !sub.active) {
+      setShowPaywall(true);
+      return;
+    }
     setPlanning(true);
     setRoute(null);
     setAnalysis(null);
+    setAltRoute(null);
+    setAltWarnings([]);
+    setShowSafer(false);
     try {
       const r = await fetch(`${BACKEND_URL}/api/route`, {
         method: "POST",
@@ -228,13 +276,20 @@ export default function MapScreen() {
         body: JSON.stringify({
           origin,
           destination: { lat: dest.lat, lng: dest.lng },
+          alternatives: true,
         }),
       });
       if (!r.ok) throw new Error("route failed");
-      const data: RouteResp = await r.json();
-      setRoute(data);
+      const data = await r.json();
+      const primary: RouteResp = {
+        geometry: data.geometry,
+        distance_m: data.distance_m,
+        duration_s: data.duration_s,
+        steps: data.steps,
+      };
+      setRoute(primary);
 
-      // Fetch analysis in parallel
+      // Fetch analysis for primary
       const ar = await fetch(`${BACKEND_URL}/api/route-analysis`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -242,12 +297,69 @@ export default function MapScreen() {
       });
       const adata = await ar.json();
       setAnalysis(adata);
-
       sendToWeb({ type: "setRoute", coords: data.geometry, warnings: adata.warnings || [] });
+
+      // If critical warnings, analyse alternatives to find safer
+      if ((adata.summary?.critical_warnings ?? 0) > 0 && Array.isArray(data.alternatives) && data.alternatives.length > 0) {
+        for (const alt of data.alternatives) {
+          try {
+            const ar2 = await fetch(`${BACKEND_URL}/api/route-analysis`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ coordinates: alt.geometry, profile }),
+            });
+            const adata2 = await ar2.json();
+            const altCrit = adata2.summary?.critical_warnings ?? 0;
+            if (altCrit < (adata.summary?.critical_warnings ?? 0)) {
+              setAltRoute({
+                geometry: alt.geometry,
+                distance_m: alt.distance_m,
+                duration_s: alt.duration_s,
+                steps: alt.steps,
+              });
+              setAltWarnings(adata2.warnings || []);
+              setShowSafer(true);
+              break;
+            }
+          } catch {}
+        }
+      }
     } catch (e) {
       console.warn(e);
     } finally {
       setPlanning(false);
+    }
+  };
+
+  const switchToSaferRoute = () => {
+    if (!altRoute) return;
+    setRoute(altRoute);
+    setAnalysis((a) => a ? { ...a, warnings: altWarnings, summary: { ...a.summary, total_warnings: altWarnings.length, critical_warnings: altWarnings.filter(w => w.critical).length } } : a);
+    sendToWeb({ type: "setRoute", coords: altRoute.geometry, warnings: altWarnings });
+    setShowSafer(false);
+    setAltRoute(null);
+  };
+
+  const startCheckout = async () => {
+    setPaying(true);
+    try {
+      const id = (await AsyncStorage.getItem("device_id")) || "";
+      const origin_url = isWeb && typeof window !== "undefined"
+        ? window.location.origin
+        : (BACKEND_URL || "");
+      const r = await fetch(`${BACKEND_URL}/api/payments/checkout/session`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ device_id: id, plan_id: "yearly_haulsafe", origin_url }),
+      });
+      const d = await r.json();
+      if (d.url && isWeb && typeof window !== "undefined") {
+        window.location.href = d.url;
+      }
+    } catch (e) {
+      console.warn(e);
+    } finally {
+      setPaying(false);
     }
   };
 
@@ -552,7 +664,84 @@ export default function MapScreen() {
             </Text>
           </View>
         )}
+
+        {showSafer && altRoute && (
+          <View style={[styles.saferBanner, { margin: 12 }]} testID="safer-banner">
+            <MaterialCommunityIcons name="shield-alert" size={22} color="#FF3B30" />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.saferTitle}>DANGER ahead — switch route?</Text>
+              <Text style={styles.saferSub}>
+                Safer route: {fmtDist(altRoute.distance_m)} · {fmtDur(altRoute.duration_s)}
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={styles.saferBtn}
+              onPress={switchToSaferRoute}
+              testID="use-safer-route-btn"
+            >
+              <Text style={styles.saferBtnText}>USE SAFER</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {sub && sub.is_trial && (
+          <TouchableOpacity
+            style={[styles.trialBanner, { marginHorizontal: 12, marginBottom: 8 }]}
+            onPress={() => setShowPaywall(true)}
+            testID="trial-banner"
+          >
+            <MaterialCommunityIcons name="clock-fast" size={16} color="#FF9F0A" />
+            <Text style={styles.trialText}>
+              Free trial · ends {new Date(sub.expires_at).toLocaleDateString()}
+            </Text>
+            <Text style={styles.trialCta}>Renew £120/yr →</Text>
+          </TouchableOpacity>
+        )}
+        {sub && !sub.active && (
+          <TouchableOpacity
+            style={[styles.trialBanner, { marginHorizontal: 12, marginBottom: 8, borderColor: "rgba(255,59,48,0.5)" }]}
+            onPress={() => setShowPaywall(true)}
+            testID="expired-banner"
+          >
+            <MaterialCommunityIcons name="lock" size={16} color="#FF3B30" />
+            <Text style={[styles.trialText, { color: "#FF3B30" }]}>
+              Subscription expired
+            </Text>
+            <Text style={styles.trialCta}>Renew £120 →</Text>
+          </TouchableOpacity>
+        )}
       </SafeAreaView>
+
+      {showPaywall && (
+        <View style={styles.paywallOverlay} testID="paywall">
+          <View style={styles.paywallCard}>
+            <View style={styles.paywallIcon}>
+              <MaterialCommunityIcons name="truck-fast" size={36} color="#007AFF" />
+            </View>
+            <Text style={styles.paywallTitle}>HaulSafe Pro</Text>
+            <Text style={styles.paywallSub}>
+              Unlimited truck-aware routes, live road safety alerts, weather along the route, and auto-rerouting around low bridges & weight limits.
+            </Text>
+            <View style={styles.paywallPriceBox}>
+              <Text style={styles.paywallPrice}>£120</Text>
+              <Text style={styles.paywallPeriod}>/ year</Text>
+            </View>
+            <TouchableOpacity
+              style={styles.paywallBtn}
+              onPress={startCheckout}
+              disabled={paying}
+              testID="start-checkout-btn"
+            >
+              <Text style={styles.paywallBtnText}>
+                {paying ? "OPENING CHECKOUT…" : "SUBSCRIBE NOW"}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => setShowPaywall(false)} testID="close-paywall">
+              <Text style={styles.paywallClose}>Maybe later</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      )}
     </View>
   );
 }
@@ -905,4 +1094,69 @@ const styles = StyleSheet.create({
     backgroundColor: "#FF3B30",
   },
   endText: { color: "#fff", fontSize: 13, fontWeight: "900", letterSpacing: 1.5 },
+  saferBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    padding: 12,
+    borderRadius: 14,
+    backgroundColor: "rgba(60,15,15,0.96)",
+    borderWidth: 1,
+    borderColor: "rgba(255,59,48,0.5)",
+  },
+  saferTitle: { color: "#fff", fontWeight: "900", fontSize: 14 },
+  saferSub: { color: "#FFB7B0", fontSize: 11, marginTop: 2 },
+  saferBtn: { paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10, backgroundColor: "#FF3B30" },
+  saferBtnText: { color: "#fff", fontWeight: "900", fontSize: 11, letterSpacing: 1 },
+  trialBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
+    backgroundColor: "rgba(28,28,30,0.95)",
+    borderWidth: 1,
+    borderColor: "rgba(255,159,10,0.4)",
+  },
+  trialText: { color: "#FF9F0A", fontSize: 12, fontWeight: "700", flex: 1 },
+  trialCta: { color: "#fff", fontSize: 12, fontWeight: "800" },
+  paywallOverlay: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: "rgba(0,0,0,0.85)",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: 24,
+  },
+  paywallCard: {
+    width: "100%",
+    maxWidth: 360,
+    backgroundColor: "#1C1C1E",
+    borderRadius: 24,
+    padding: 24,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "rgba(0,122,255,0.3)",
+  },
+  paywallIcon: {
+    width: 72,
+    height: 72,
+    borderRadius: 18,
+    backgroundColor: "rgba(0,122,255,0.15)",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 16,
+  },
+  paywallTitle: { color: "#fff", fontSize: 26, fontWeight: "900", letterSpacing: -0.5 },
+  paywallSub: { color: "#C7C7CC", fontSize: 14, textAlign: "center", marginVertical: 14, lineHeight: 20 },
+  paywallPriceBox: { flexDirection: "row", alignItems: "baseline", gap: 4, marginVertical: 8 },
+  paywallPrice: { color: "#fff", fontSize: 44, fontWeight: "900", letterSpacing: -1 },
+  paywallPeriod: { color: "#8E8E93", fontSize: 16, fontWeight: "700" },
+  paywallBtn: { width: "100%", height: 54, borderRadius: 14, backgroundColor: "#007AFF", alignItems: "center", justifyContent: "center", marginTop: 12 },
+  paywallBtnText: { color: "#fff", fontSize: 14, fontWeight: "900", letterSpacing: 1.5 },
+  paywallClose: { color: "#8E8E93", fontSize: 13, fontWeight: "700", marginTop: 14, padding: 8 },
 });

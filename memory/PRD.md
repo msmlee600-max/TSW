@@ -19,9 +19,16 @@ A dark-themed mobile app (React Native + Expo Router) with:
 - Backend: FastAPI + Motor (MongoDB), httpx
 - APIs (no keys): Nominatim, OSRM, Overpass, Open-Meteo
 
+## Subscription & Auto-Reroute (added in iteration 2)
+- 7-day free trial auto-starts on first launch
+- Yearly £120 subscription via Stripe Checkout (test key from environment)
+- Trial banner / expired banner shown over map; tap opens paywall modal
+- After payment, polling detects success, subscription marked active for 365 days
+- Paywall blocks route planning when subscription expired
+- Auto-reroute: when route has critical warnings, system requests OSRM alternatives, analyses each, and shows red "DANGER ahead — switch route?" banner with a one-tap "USE SAFER" button to switch to a route with fewer critical hazards.
+
 ## Endpoints
-- `GET /api/truck-profile/{device_id}` — get/auto-create profile
-- `PUT /api/truck-profile` — upsert profile by device_id
-- `GET /api/geocode?q=` — Nominatim search
-- `POST /api/route` — OSRM route between two LatLng
-- `POST /api/route-analysis` — analyse warnings + weather along a route
+- `GET /api/subscription/{device_id}` — get/auto-create with 7-day trial
+- `POST /api/payments/checkout/session` — create Stripe Checkout session
+- `GET /api/payments/checkout/status/{session_id}` — poll payment, activate subscription
+- `POST /api/webhook/stripe` — Stripe webhook for async confirmation
