@@ -1,0 +1,82 @@
+{
+  "summary": "Backend fully functional (9/9 pytest cases passing). Frontend welcome + profile + map screens render and navigation/search/analysis all wire up correctly, BUT the Leaflet map itself does NOT render on the web preview because react-native-webview is unsupported on web. Additionally zero testID attributes exist on interactive elements, making automated UI testing brittle.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "app/map.tsx (WebView)",
+        "issue": "Map screen displays literal text 'React Native WebView does not support this platform.' on web preview. react-native-webview has no web implementation, so Leaflet tiles, markers and route polyline are never rendered in browser. Core feature of the app (visual map) is broken on web.",
+        "testID": "n/a",
+        "priority": "CRITICAL"
+      },
+      {
+        "component": "app/index.tsx, app/profile.tsx, app/map.tsx",
+        "issue": "No testID props on buttons, inputs, toggles, search results, vehicle-type cards, axle chips, save button, end-route button, etc. Automated testing has to rely on fragile text selectors.",
+        "testID": "missing on all interactive elements",
+        "priority": "HIGH"
+      },
+      {
+        "component": "app/map.tsx - bottom sheet / End Route",
+        "issue": "After selecting a destination, 'Analyzing route…' indicator appears but the expected bottom sheet with ETA/distance/warnings/weather strip and the 'End Route' button were not visible within ~20s. Search results dropdown also stays open and obscures map area. Could be related to the WebView not loading (no 'mapReady' message arrives so state may remain stuck).",
+        "testID": "end-route-button (not found)",
+        "priority": "HIGH"
+      }
+    ],
+    "integration_issues": [
+      {
+        "flow": "Destination selection → /api/route → /api/route-analysis → map polyline + bottom sheet",
+        "issue": "Route + analysis APIs succeed on backend (verified via pytest and backend logs), but on web the polyline never draws (WebView broken) and bottom-sheet UI did not surface during test. Needs verification on native (Expo Go) OR a web-compatible map fallback.",
+        "affected_testIDs": ["search-input", "search-result-0", "route-polyline", "bottom-sheet", "end-route-button"]
+      }
+    ],
+    "design_issues": [
+      {
+        "screen": "map",
+        "issues": [
+          "Warning banner 'React Native WebView does not support this platform.' is rendered as unstyled red text bleeding over the header on web.",
+          "Search results dropdown does not auto-close after selecting a result, covering the map area."
+        ]
+      }
+    ],
+    "react_native_issues": [
+      {
+        "component": "WebView (react-native-webview)",
+        "issue": "Library has no web implementation. Must use Platform.OS guard to render an <iframe srcDoc={leafletHtml}/> on web, or switch to react-leaflet for web and keep WebView for iOS/Android."
+      },
+      {
+        "component": "Global",
+        "issue": "Console warning: 'props.pointerEvents is deprecated. Use style.pointerEvents' - non-blocking but should migrate."
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_haulsafe_api.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Fix map rendering on web: wrap WebView with Platform.OS check; on web render an <iframe> with the same Leaflet HTML (srcDoc or data URL) and bridge postMessage both ways. Alternatively add react-leaflet for web only.",
+    "Add testID props to every interactive element: setup-profile-button, skip-to-map-link, vehicle-type-{HGV|LGV|Truck|Van}, name-input, height-input, width-input, length-input, weight-input, axles-{n}, hazmat-toggle, avoid-tolls-toggle, avoid-motorways-toggle, save-profile-button, save-and-drive-button, search-input, search-result-{i}, end-route-button, bottom-sheet, weather-strip, warning-item-{i}.",
+    "Ensure search results dropdown collapses after a result is tapped so the bottom sheet and map are visible.",
+    "Verify the full route flow end-to-end once map rendering is fixed (select destination → polyline → ETA + warnings + weather strip → End Route clears state).",
+    "Investigate deprecated pointerEvents warning (probably inside one of the third-party libs - low priority)."
+  ],
+  "critical_code_review_comments": [
+    "server.py is well structured (~380 lines). No MongoDB _id leakage (proper projection {_id:0} used).",
+    "All backend external calls (Nominatim/OSRM/Overpass/Open-Meteo) properly async with httpx, timeouts set, fallback Overpass endpoints - good.",
+    "Overpass query result might be empty if endpoints rate-limit; current fallback returns empty elements silently. Consider surfacing a degraded-mode flag to UI.",
+    "Frontend map.tsx relies solely on react-native-webview which breaks web - should use Platform-specific rendering.",
+    "No testID attributes anywhere - violates testing convention mandated in guidelines."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_haulsafe_api.py (created)"
+  ],
+  "success_rate": {"backend": "100%", "frontend": "50%"},
+  "seed_data_creation": "Ephemeral truck profiles keyed by TEST_<uuid> device_ids were created during pytest; they are harmless and can be cleaned up later if needed.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Backend suite at /app/backend/tests/test_haulsafe_api.py covers all 5 endpoints and is green. Re-run after main agent fixes web map rendering and adds testIDs. Then run Playwright flow: open /, tap SET UP TRUCK PROFILE, fill profile, tap SAVE & DRIVE, search 'manchester', select first UK result, wait 20-30s, verify polyline visible + bottom sheet shows distance+duration+warnings, tap End Route to clear.",
+  "rca_of_issue": "Root cause of web map blank: react-native-webview does not ship a web build - on web it returns a placeholder component ('React Native WebView does not support this platform.'). Because the Leaflet HTML + JS bridge (setRoute, setWarnings, mapReady postMessage) all live inside the WebView, on web none of the map/polyline/markers render and the parent never receives 'mapReady', so any code gated on that event may also stall. Mitigation: render an <iframe srcDoc={html}/> with window.postMessage bridging on Platform.OS==='web' and keep WebView for native."
+}
