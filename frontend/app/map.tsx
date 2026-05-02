@@ -299,8 +299,14 @@ export default function MapScreen() {
       setAnalysis(adata);
       sendToWeb({ type: "setRoute", coords: data.geometry, warnings: adata.warnings || [] });
 
-      // If critical warnings, analyse alternatives to find safer
+      // If critical warnings, analyse alternatives and AUTO-SWITCH to safest (avoiding all dangerous roads)
       if ((adata.summary?.critical_warnings ?? 0) > 0 && Array.isArray(data.alternatives) && data.alternatives.length > 0) {
+        let bestRoute: RouteResp = primary;
+        let bestWarnings: Warning[] = adata.warnings || [];
+        let bestAnalysis = adata;
+        let bestCritical = adata.summary?.critical_warnings ?? 999;
+        let avoidedFrom = bestCritical;
+
         for (const alt of data.alternatives) {
           try {
             const ar2 = await fetch(`${BACKEND_URL}/api/route-analysis`, {
@@ -309,19 +315,33 @@ export default function MapScreen() {
               body: JSON.stringify({ coordinates: alt.geometry, profile }),
             });
             const adata2 = await ar2.json();
-            const altCrit = adata2.summary?.critical_warnings ?? 0;
-            if (altCrit < (adata.summary?.critical_warnings ?? 0)) {
-              setAltRoute({
+            const altCrit = adata2.summary?.critical_warnings ?? 999;
+            if (altCrit < bestCritical) {
+              bestCritical = altCrit;
+              bestRoute = {
                 geometry: alt.geometry,
                 distance_m: alt.distance_m,
                 duration_s: alt.duration_s,
                 steps: alt.steps,
-              });
-              setAltWarnings(adata2.warnings || []);
-              setShowSafer(true);
-              break;
+              };
+              bestWarnings = adata2.warnings || [];
+              bestAnalysis = adata2;
+              if (altCrit === 0) break; // perfect — fully truck-safe
             }
           } catch {}
+        }
+
+        // Auto-promote safest route — never show the dangerous primary
+        if (bestRoute !== primary) {
+          setRoute(bestRoute);
+          setAnalysis(bestAnalysis);
+          sendToWeb({ type: "setRoute", coords: bestRoute.geometry, warnings: bestWarnings });
+          setAvoidedCount(avoidedFrom - bestCritical);
+          setTimeout(() => setAvoidedCount(0), 6000);
+        } else if (bestCritical > 0) {
+          // No safe alternative found — keep showing primary with warnings
+          setNoSafeRoute(true);
+          setTimeout(() => setNoSafeRoute(false), 8000);
         }
       }
     } catch (e) {
@@ -665,22 +685,22 @@ export default function MapScreen() {
           </View>
         )}
 
-        {showSafer && altRoute && (
-          <View style={[styles.saferBanner, { margin: 12 }]} testID="safer-banner">
-            <MaterialCommunityIcons name="shield-alert" size={22} color="#FF3B30" />
+        {avoidedCount > 0 && (
+          <View style={[styles.saferBanner, { margin: 12, borderColor: "rgba(50,215,75,0.5)", backgroundColor: "rgba(15,40,20,0.95)" }]} testID="auto-avoided-banner">
+            <MaterialCommunityIcons name="shield-check" size={22} color="#32D74B" />
             <View style={{ flex: 1 }}>
-              <Text style={styles.saferTitle}>DANGER ahead — switch route?</Text>
-              <Text style={styles.saferSub}>
-                Safer route: {fmtDist(altRoute.distance_m)} · {fmtDur(altRoute.duration_s)}
-              </Text>
+              <Text style={[styles.saferTitle, { color: "#32D74B" }]}>Auto-avoided {avoidedCount} hazard{avoidedCount > 1 ? "s" : ""}</Text>
+              <Text style={styles.saferSub}>Showing the truck-safe route only</Text>
             </View>
-            <TouchableOpacity
-              style={styles.saferBtn}
-              onPress={switchToSaferRoute}
-              testID="use-safer-route-btn"
-            >
-              <Text style={styles.saferBtnText}>USE SAFER</Text>
-            </TouchableOpacity>
+          </View>
+        )}
+        {noSafeRoute && (
+          <View style={[styles.saferBanner, { margin: 12 }]} testID="no-safe-route-banner">
+            <MaterialCommunityIcons name="alert-octagon" size={22} color="#FF3B30" />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.saferTitle}>NO TRUCK-SAFE ROUTE FOUND</Text>
+              <Text style={styles.saferSub}>All paths have restrictions exceeding your truck. Drive with caution.</Text>
+            </View>
           </View>
         )}
 
