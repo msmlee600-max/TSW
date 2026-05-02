@@ -16,6 +16,9 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { WebView } from "react-native-webview";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
+// On web, react-native-webview is unsupported. We render a real <iframe> via React.createElement('iframe', ...)
+const isWeb = Platform.OS === "web";
+
 const BACKEND_URL = process.env.EXPO_PUBLIC_BACKEND_URL;
 const { height: SCREEN_H } = Dimensions.get("window");
 
@@ -191,9 +194,28 @@ export default function MapScreen() {
     return () => clearTimeout(t);
   }, [query]);
 
+  const iframeRef = useRef<any>(null);
   const sendToWeb = (msg: any) => {
-    webRef.current?.postMessage(JSON.stringify(msg));
+    if (isWeb) {
+      try {
+        iframeRef.current?.contentWindow?.postMessage(JSON.stringify(msg), "*");
+      } catch {}
+    } else {
+      webRef.current?.postMessage(JSON.stringify(msg));
+    }
   };
+
+  useEffect(() => {
+    if (!isWeb) return;
+    const handler = (e: MessageEvent) => {
+      try {
+        const m = typeof e.data === "string" ? JSON.parse(e.data) : null;
+        if (m?.type === "ready") setWebReady(true);
+      } catch {}
+    };
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, []);
 
   const planRoute = async (dest: GeoResult) => {
     setPlanning(true);
@@ -250,21 +272,41 @@ export default function MapScreen() {
 
   return (
     <View style={styles.root} testID="map-screen">
-      <WebView
-        ref={webRef}
-        originWhitelist={["*"]}
-        source={{ html: LEAFLET_HTML }}
-        style={styles.web}
-        onMessage={(e) => {
-          try {
-            const m = JSON.parse(e.nativeEvent.data);
-            if (m.type === "ready") setWebReady(true);
-          } catch {}
-        }}
-        javaScriptEnabled
-        domStorageEnabled
-        androidLayerType="hardware"
-      />
+      {isWeb ? (
+        // @ts-ignore - iframe is HTMLElement on web only
+        React.createElement("iframe", {
+          ref: iframeRef,
+          srcDoc: LEAFLET_HTML,
+          style: {
+            border: "0",
+            width: "100%",
+            height: "100%",
+            backgroundColor: "#0A0A0A",
+            position: "absolute",
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+          },
+          "data-testid": "leaflet-map-iframe",
+        })
+      ) : (
+        <WebView
+          ref={webRef}
+          originWhitelist={["*"]}
+          source={{ html: LEAFLET_HTML }}
+          style={styles.web}
+          onMessage={(e) => {
+            try {
+              const m = JSON.parse(e.nativeEvent.data);
+              if (m.type === "ready") setWebReady(true);
+            } catch {}
+          }}
+          javaScriptEnabled
+          domStorageEnabled
+          androidLayerType="hardware"
+        />
+      )}
 
       {/* Top search bar */}
       <SafeAreaView style={styles.topOverlay} edges={["top"]} pointerEvents="box-none">
