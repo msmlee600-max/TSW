@@ -1,0 +1,130 @@
+{
+  "theme_and_archetype": {
+    "theme": "DARK",
+    "archetype": "Archetype 2: The Performance Pro",
+    "rationale": "For professional HGV/LGV truck drivers navigating often at night or under high-stress conditions, a 'Tactical Minimalism' approach is best. Deep Obsidian anchors the UI, eliminating glare, while high-contrast Volt Blue and Safety Amber draw attention strictly to navigational cues and critical safety warnings."
+  },
+  "colors": {
+    "background": {
+      "base": "#0A0A0A",
+      "surface": "#1C1C1E",
+      "overlay": "rgba(10, 10, 10, 0.85)"
+    },
+    "text": {
+      "primary": "#FFFFFF",
+      "secondary": "#8E8E93",
+      "inverse": "#000000"
+    },
+    "brand": {
+      "primary": "#007AFF",
+      "primary_hover": "#3395FF"
+    },
+    "status": {
+      "danger": "#FF3B30",
+      "warning": "#FF9F0A",
+      "success": "#32D74B",
+      "info": "#007AFF"
+    },
+    "borders": {
+      "default": "rgba(255, 255, 255, 0.1)",
+      "focus": "#007AFF"
+    }
+  },
+  "typography": {
+    "strategy": "System-native or easy-to-load Google Fonts via Expo. Strong Condensed Sans for metrics (ETA, speed, distance) to maximize screen real estate, Geometric Sans for high-legibility body text.",
+    "fonts": {
+      "display": "Oswald, Barlow Condensed, or System Bold (Condensed)",
+      "body": "Inter, DM Sans, or System Regular"
+    },
+    "scale": {
+      "h1_display": "text-5xl tracking-tighter uppercase",
+      "h2": "text-3xl tracking-tight uppercase",
+      "h3": "text-xl font-bold",
+      "body": "text-base tracking-wide",
+      "caption": "text-sm uppercase tracking-widest text-secondary"
+    }
+  },
+  "spacing_and_layout": {
+    "touch_targets": {
+      "minimum": "48px",
+      "preferred": "56px (for gloved hands)"
+    },
+    "containers": {
+      "padding": "p-6",
+      "gap": "gap-4",
+      "border_radius": "rounded-2xl"
+    },
+    "borders": {
+      "style": "1px solid",
+      "color": "border-white/10"
+    }
+  },
+  "components": {
+    "TurnByTurnHUD": {
+      "position": "Absolute Top, full width",
+      "style": "Solid surface (#1C1C1E), border-b border-white/10, shadow-lg",
+      "layout": "Flex row, massive directional icon on left, Distance in Volt Blue, Next Street in White.",
+      "typography": "Distance should use h1_display font size."
+    },
+    "WeatherAndWindStrip": {
+      "position": "Absolute Right edge, vertical stack",
+      "style": "Glassmorphism or Solid surface, rounded-full, p-2",
+      "elements": "Wind icon + speed. If speed > 30mph, text color becomes Safety Amber. If > 50mph, Danger Red."
+    },
+    "SafetyWarningsPanel": {
+      "position": "Floating below TurnByTurn HUD or side panel",
+      "style": "Surface with 1px border. Background tinted slightly red (rgba(255,59,48,0.1)) if critical.",
+      "elements": "Low bridge height limit, Weight limits, Sharp curves. Must use high-contrast icons."
+    },
+    "TripBottomSheet": {
+      "position": "Absolute Bottom",
+      "style": "Rounded-t-3xl, #1C1C1E surface, swipeable. 1px border-t border-white/10",
+      "elements": "ETA, Time Remaining, Distance. Action buttons for 'End Drive' or 'Report Hazard'."
+    },
+    "TruckProfileSetup": {
+      "layout": "Scrollable form. Large inputs. Grid layout for dimensions (Height, Width, Length, Weight).",
+      "inputs": "bg-black/50, border border-white/10, h-14, rounded-xl, text-white text-lg, p-4. Focus state: border-blue-500",
+      "toggles": "Custom large switches for Hazmat routing, Avoid Tolls."
+    }
+  },
+  "icons": {
+    "library": "@expo/vector-icons (MaterialCommunityIcons or Feather)",
+    "recommendations": {
+      "turn_left": "arrow-u-left-top",
+      "turn_right": "arrow-u-right-top",
+      "straight": "arrow-up",
+      "wind": "weather-windy",
+      "rain": "weather-pouring",
+      "bridge": "bridge",
+      "weight": "weight-kilogram",
+      "truck": "truck-outline",
+      "hazmat": "biohazard",
+      "warning": "alert-circle-outline"
+    }
+  },
+  "map_style": {
+    "provider": "OpenStreetMap via react-native-maps or leaflet webview",
+    "theme": "Dark map tiles (e.g., CartoDB Dark Matter or Stadia Alidade Smooth Dark) to blend with the UI. Route line should be thick Volt Blue (#007AFF)."
+  },
+  "media": {
+    "image_urls": [
+      {
+        "url": "https://images.unsplash.com/photo-1761473573747-91840566ef1c?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NzZ8MHwxfHNlYXJjaHwyfHxkYXJrJTIwaGlnaHdheSUyMGRyaXZpbmclMjBuaWdodHxlbnwwfHx8fDE3Nzc3NDA1Njl8MA&ixlib=rb-4.1.0&q=85",
+        "category": "onboarding_background",
+        "description": "Dark highway driving at night, use as a cinematic background for the initial launch/onboarding screen with a dark gradient overlay."
+      }
+    ]
+  },
+  "accessibility_and_motion": {
+    "contrast": "Ensure all text against the #1C1C1E surface exceeds WCAG AA (4.5:1).",
+    "motion": "Use subtle layout transitions for expanding the bottom sheet. Turn banner updates should flash or scale slightly to catch peripheral vision.",
+    "touch": "All buttons MUST have a minimum height/width of 48px to accommodate drivers with gloves or limited dexterity in a moving vehicle."
+  },
+  "instructions_to_main_agent": {
+    "tech_stack_notes": "Use React Native Expo. Styling can be done via StyleSheet or NativeWind. Translate Tailwind classes provided into appropriate StyleSheet objects if NativeWind is not configured.",
+    "testing_attributes": "Add testID prop to all interactive elements (e.g., testID='truck-profile-save-button').",
+    "map_implementation": "Since standard OSM tiles are light, look for a dark mode tile provider URL or use map inversion filters if rendering a webview. If using react-native-maps with Google Maps, supply a dark JSON map style.",
+    "weather_integration": "Connect to Open-Meteo for route waypoints, display in the WeatherAndWindStrip.",
+    "ui_vibe": "Avoid cute animations or rounded soft aesthetics. The app must look like a piece of serious industrial machinery—tactical, sharp, and data-dense but readable."
+  }
+}
