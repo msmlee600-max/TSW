@@ -26,6 +26,14 @@ const VEHICLE_TYPES = [
   { key: "Van", label: "Van", icon: "van-utility" },
 ] as const;
 
+// Standard UK / EU dimension presets per vehicle class
+const VEHICLE_PRESETS: Record<string, { height_m: string; width_m: string; length_m: string; weight_t: string; axles: string }> = {
+  HGV:   { height_m: "4.5",  width_m: "2.55", length_m: "16.5", weight_t: "44",  axles: "5" },
+  LGV:   { height_m: "3.0",  width_m: "2.10", length_m: "7.0",  weight_t: "7.5", axles: "2" },
+  Truck: { height_m: "4.0",  width_m: "2.50", length_m: "12.0", weight_t: "26",  axles: "3" },
+  Van:   { height_m: "2.6",  width_m: "2.00", length_m: "5.5",  weight_t: "3.5", axles: "2" },
+};
+
 type ProfileState = {
   device_id: string;
   name: string;
@@ -166,7 +174,9 @@ export default function ProfileScreen() {
               return (
                 <TouchableOpacity
                   key={v.key}
-                  onPress={() => update("vehicle_type", v.key)}
+                  onPress={() => {
+                    setP((s) => ({ ...s, vehicle_type: v.key, ...VEHICLE_PRESETS[v.key] }));
+                  }}
                   style={[styles.typeBtn, active && styles.typeBtnActive]}
                   testID={`type-${v.key}`}
                 >
