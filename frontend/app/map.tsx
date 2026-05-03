@@ -167,6 +167,8 @@ export default function MapScreen() {
   const [sub, setSub] = useState<{ active: boolean; status: string; is_trial: boolean; expires_at: string } | null>(null);
   const [showPaywall, setShowPaywall] = useState(false);
   const [paying, setPaying] = useState(false);
+  const [avoidedCount, setAvoidedCount] = useState(0);
+  const [noSafeRoute, setNoSafeRoute] = useState(false);
 
   const refreshSub = async (deviceId: string) => {
     try {

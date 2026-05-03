@@ -24,14 +24,18 @@ const VEHICLE_TYPES = [
   { key: "LGV", label: "LGV", icon: "truck-fast" },
   { key: "Truck", label: "Truck", icon: "truck-cargo-container" },
   { key: "Van", label: "Van", icon: "van-utility" },
+  { key: "DoubleDecker", label: "Decker", icon: "bus-double-decker" },
+  { key: "Coach", label: "Coach", icon: "bus" },
 ] as const;
 
 // Standard UK / EU dimension presets per vehicle class
 const VEHICLE_PRESETS: Record<string, { height_m: string; width_m: string; length_m: string; weight_t: string; axles: string }> = {
-  HGV:   { height_m: "4.5",  width_m: "2.55", length_m: "16.5", weight_t: "44",  axles: "5" },
-  LGV:   { height_m: "3.0",  width_m: "2.10", length_m: "7.0",  weight_t: "7.5", axles: "2" },
-  Truck: { height_m: "4.0",  width_m: "2.50", length_m: "12.0", weight_t: "26",  axles: "3" },
-  Van:   { height_m: "2.6",  width_m: "2.00", length_m: "5.5",  weight_t: "3.5", axles: "2" },
+  HGV:          { height_m: "4.5",  width_m: "2.55", length_m: "16.5", weight_t: "44",   axles: "5" },
+  LGV:          { height_m: "3.0",  width_m: "2.10", length_m: "7.0",  weight_t: "7.5",  axles: "2" },
+  Truck:        { height_m: "4.0",  width_m: "2.50", length_m: "12.0", weight_t: "26",   axles: "3" },
+  Van:          { height_m: "2.6",  width_m: "2.00", length_m: "5.5",  weight_t: "3.5",  axles: "2" },
+  DoubleDecker: { height_m: "4.4",  width_m: "2.55", length_m: "11.5", weight_t: "18",   axles: "2" },
+  Coach:        { height_m: "3.8",  width_m: "2.55", length_m: "13.5", weight_t: "18",   axles: "2" },
 };
 
 type ProfileState = {
@@ -168,7 +172,7 @@ export default function ProfileScreen() {
           keyboardShouldPersistTaps="handled"
         >
           <Text style={styles.sectionLabel}>VEHICLE TYPE</Text>
-          <View style={styles.typeRow}>
+          <View style={[styles.typeRow, { flexWrap: "wrap" }]}>
             {VEHICLE_TYPES.map((v) => {
               const active = p.vehicle_type === v.key;
               return (
@@ -422,9 +426,9 @@ const styles = StyleSheet.create({
     fontWeight: "700",
     marginBottom: 12,
   },
-  typeRow: { flexDirection: "row", gap: 10 },
+  typeRow: { flexDirection: "row", gap: 10, rowGap: 10 },
   typeBtn: {
-    flex: 1,
+    width: "31%",
     height: 90,
     borderRadius: 16,
     backgroundColor: "#1C1C1E",
