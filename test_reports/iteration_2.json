@@ -1,0 +1,67 @@
+{
+  "summary": "Comprehensive HaulSafe regression. Backend: 17/19 passed, 1 skipped (Nominatim 429 upstream rate-limit, environmental), 1 XFAIL (HIGH-priority Stripe checkout-status 500 bug). Frontend: welcome / profile / map / admin all rendering correctly with full testID coverage. Leaflet map now renders via iframe on web (iteration_1 WebView issue is FIXED). Decker preset auto-fills 4.4/2.55/11.5/18 and Coach height 3.8 as spec'd. Admin PIN gating works (wrong PIN stays locked, 1234 unlocks £ revenue + counts).",
+  "backend_issues": {
+    "critical": [
+      {
+        "endpoint": "GET /api/payments/checkout/status/{session_id}",
+        "issue": "Returns 500 Internal Server Error for a session_id that was just created via POST /api/payments/checkout/session. Stripe proxy at integrations.emergentagent.com responds 404 'No such checkout.session' on retrieve immediately after a 200 create. emergentintegrations.checkout raises CheckoutError which is unhandled. This breaks the /success page polling flow after Stripe Checkout. Backend should at minimum catch CheckoutError and surface a structured response (status='unknown' or 404) instead of 500. Suspect: emergent Stripe proxy create/retrieve are not strongly consistent OR account scoping mismatch. Worth web_search if it persists post-fix.",
+        "priority": "HIGH"
+      }
+    ],
+    "minor": [
+      {
+        "endpoint": "GET /api/geocode",
+        "issue": "Public Nominatim returns 429 Too Many Requests under load (1 req/s policy). Backend bubbles as 502. Search UX may intermittently fail. Consider adding small retry/backoff or a self-hosted geocoder; not blocking."
+      }
+    ]
+  },
+  "frontend_issues": {
+    "ui_bugs": [
+      {
+        "component": "app/index.tsx (welcome)",
+        "issue": "Spec mentions a tiny 'Owner dashboard' link on the welcome screen — not visible. Only 'SET UP TRUCK PROFILE' and 'Skip — go straight to map' shown. Users can still navigate to /admin via direct URL but no in-app entry point.",
+        "testID": "missing (e.g. owner-dashboard-link)",
+        "priority": "MEDIUM"
+      }
+    ],
+    "integration_issues": [
+      {
+        "flow": "Stripe Checkout → /success polling",
+        "issue": "After SUBSCRIBE NOW completes (or even before), /success polls /api/payments/checkout/status/{session_id} which 500s due to backend CheckoutError. Receipt screen will not render. Same bug as backend critical above.",
+        "affected_testIDs": ["success-screen", "subscribe-button"]
+      }
+    ],
+    "design_issues": [],
+    "react_native_issues": [
+      {
+        "component": "Global",
+        "issue": "Console: 'props.pointerEvents is deprecated. Use style.pointerEvents' — non-blocking warning from a dependency. Carried over from iteration_1, low priority."
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_haulsafe_api.py",
+    "/app/test_reports/pytest/pytest_results.xml"
+  ],
+  "action_items": [
+    "Fix /api/payments/checkout/status/{session_id} 500 error. In server.py line ~518, wrap stripe.get_checkout_status in try/except CheckoutError → if 'No such checkout.session' return {payment_status: 'unknown', status: 'pending'} or HTTPException(404). Investigate why a just-created session id is not retrievable from the emergent Stripe proxy; if reproducible, web_search 'emergentintegrations stripe get_checkout_status 404 after create'.",
+    "Optionally add Nominatim retry-with-backoff (1s) and/or fall back to a secondary geocoder so /api/geocode doesn't 502 when Nominatim throttles.",
+    "Add a tiny 'Owner dashboard' tappable link (testID='owner-dashboard-link') on the welcome screen per PRD."
+  ],
+  "critical_code_review_comments": [
+    "server.py is well-structured (~575 lines, slightly above 700-limit guideline but acceptable). MongoDB _id properly excluded with projection {_id:0}.",
+    "checkout_status() does not guard against CheckoutError → propagates as 500. Always wrap third-party SDK calls.",
+    "subscription/get_subscription previously had a tz-naive vs tz-aware datetime bug (visible in older logs: 'can't compare offset-naive and offset-aware datetimes' line 404). Latest code now normalizes — verified 200 OK and is_trial=true.",
+    "Frontend testID coverage is excellent on welcome, profile, map, admin screens. Map iframe approach replaces broken WebView from iteration_1.",
+    "Stripe webhook endpoint exists and updates subscription on paid event — good fallback path even if poll fails."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_haulsafe_api.py (extended to 19 tests covering subscription, payments, admin)"
+  ],
+  "success_rate": {"backend": "89% (17/19 passed; 1 skipped upstream rate-limit, 1 XFAIL real bug)", "frontend": "95% (welcome/profile/map/admin verified; success page not exercised end-to-end)"},
+  "seed_data_creation": "Ephemeral profiles and subscriptions keyed by TEST_<uuid> device_ids created during pytest. They have status=trial/cancelled. Active subscribers count reads 4 in admin dashboard, includes these test rows. Safe to leave or purge by querying device_id LIKE 'TEST_%'.",
+  "retest_needed": true,
+  "should_main_agent_self_test": false,
+  "context_for_next_testing_agent": "Pytest suite at /app/backend/tests/test_haulsafe_api.py covers Health/Truck/Geocode/Route/RouteAnalysis/Subscription/Payments/Admin (19 cases). Run with EXPO_PUBLIC_BACKEND_URL set. Two known non-pass results: (a) test_geocode_manchester SKIPS on 429, (b) test_checkout_status_unpaid XFAIL until backend wraps CheckoutError. Frontend: welcome '[data-testid=setup-truck-btn]'+'[data-testid=skip-to-map-btn]', profile vehicle types use '[data-testid=type-{HGV|LGV|Truck|Van|DoubleDecker|Coach}]' (note: DoubleDecker not Decker), inputs '[data-testid=input-{name|height|width|length|weight}]', save buttons '[data-testid=save-profile-btn]' & '[data-testid=continue-to-map-btn]'. Map: '[data-testid=leaflet-map-iframe|search-input|recenter-btn|trial-banner|open-profile-btn]'. Admin: '[data-testid=admin-pin-input|admin-unlock-btn]'. Couldn't end-to-end the Stripe checkout (no test card automation); verified session URL is valid Stripe URL.",
+  "rca_of_issue": "RCA — checkout-status 500 (UPDATED): The latest backend log reveals the real failure is a Pydantic validation error INSIDE the emergentintegrations.payments.stripe.checkout library, not a Stripe 404. Trace: 'CheckoutError: Unexpected error retrieving session status: 1 validation error for CheckoutStatusResponse / metadata / Input should be a valid dictionary [type=dict_type, input_value=<StripeObject at 0xfff7d8...>, input_type=StripeObject]'. The library models CheckoutStatusResponse.metadata as a plain dict, but Stripe SDK returns a StripeObject (dict-like but not isinstance(dict)) under Pydantic v2 strict mode, so model validation fails. Reproduction: POST /api/payments/checkout/session, then GET /api/payments/checkout/status/{session_id}. Mitigation options for backend (server.py:checkout_status): (1) try/except CheckoutError → return 200 {payment_status:'unknown', status:'pending'} so /success polling continues gracefully; (2) bypass emergentintegrations and call stripe.checkout.Session.retrieve directly in this endpoint, casting metadata via dict(session.metadata or {}); (3) flag to emergentintegrations maintainers to coerce metadata via dict() before pydantic. Approach (1) is the smallest fix and unblocks the demo."
+}
