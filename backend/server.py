@@ -515,7 +515,17 @@ async def checkout_status(session_id: str, http_request: Request):
     api_key = os.environ.get("STRIPE_API_KEY")
     host = str(http_request.base_url).rstrip("/")
     stripe = StripeCheckout(api_key=api_key, webhook_url=f"{host}/api/webhook/stripe")
-    status: CheckoutStatusResponse = await stripe.get_checkout_status(session_id)
+    try:
+        status: CheckoutStatusResponse = await stripe.get_checkout_status(session_id)
+    except Exception as e:
+        logger.warning(f"stripe get_checkout_status failed for {session_id}: {e}")
+        tx = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
+        return {
+            "payment_status": (tx or {}).get("payment_status", "unknown"),
+            "status": (tx or {}).get("status", "pending"),
+            "amount_total": int(((tx or {}).get("amount") or 0) * 100),
+            "currency": (tx or {}).get("currency", "gbp"),
+        }
     tx = await db.payment_transactions.find_one({"session_id": session_id}, {"_id": 0})
     if tx and tx.get("payment_status") != "paid" and status.payment_status == "paid":
         await db.payment_transactions.update_one(

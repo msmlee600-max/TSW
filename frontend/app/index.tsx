@@ -73,6 +73,16 @@ export default function Index() {
             >
               <Text style={styles.secondaryBtnText}>Skip — go straight to map</Text>
             </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.adminLink}
+              onPress={() => router.push("/admin")}
+              testID="open-admin-btn"
+              activeOpacity={0.7}
+            >
+              <MaterialCommunityIcons name="shield-key-outline" size={14} color="#48484A" />
+              <Text style={styles.adminLinkText}>Owner dashboard</Text>
+            </TouchableOpacity>
           </View>
         </SafeAreaView>
       </ImageBackground>
