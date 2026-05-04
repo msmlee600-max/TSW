@@ -401,13 +401,22 @@ async def get_subscription(device_id: str):
         await db.subscriptions.insert_one(sub.copy())
         sub.pop("_id", None)
     expires_at = sub.get("expires_at")
-    active = expires_at is not None and (expires_at if isinstance(expires_at, datetime) else datetime.fromisoformat(str(expires_at).replace("Z",""))) > now
+    # Normalize to timezone-aware UTC for comparison
+    if isinstance(expires_at, datetime) and expires_at.tzinfo is None:
+        expires_at_cmp = expires_at.replace(tzinfo=timezone.utc)
+    else:
+        expires_at_cmp = expires_at
+    active = expires_at_cmp is not None and (
+        expires_at_cmp if isinstance(expires_at_cmp, datetime)
+        else datetime.fromisoformat(str(expires_at_cmp).replace("Z",""))
+    ) > now
     return {
         "device_id": device_id,
         "status": sub.get("status", "expired") if active else "expired",
         "active": active,
         "expires_at": expires_at.isoformat() if isinstance(expires_at, datetime) else expires_at,
         "is_trial": sub.get("status") == "trial" and active,
+        "auto_renew": sub.get("auto_renew", True),
     }
 
 @api_router.post("/payments/checkout/session")
@@ -420,7 +429,7 @@ async def create_checkout(req: CheckoutCreateRequest, http_request: Request):
         raise HTTPException(status_code=500, detail="Stripe not configured")
     host = str(http_request.base_url).rstrip("/")
     stripe = StripeCheckout(api_key=api_key, webhook_url=f"{host}/api/webhook/stripe")
-    success_url = f"{req.origin_url}/map?session_id={{CHECKOUT_SESSION_ID}}"
+    success_url = f"{req.origin_url}/success?session_id={{CHECKOUT_SESSION_ID}}"
     cancel_url = f"{req.origin_url}/map?cancelled=1"
     metadata = {"device_id": req.device_id, "plan_id": req.plan_id, "source": "haulsafe_app"}
     creq = CheckoutSessionRequest(
@@ -434,6 +443,72 @@ async def create_checkout(req: CheckoutCreateRequest, http_request: Request):
         "status": "pending", "metadata": metadata, "created_at": datetime.now(timezone.utc),
     })
     return {"url": session.url, "session_id": session.session_id}
+
+@api_router.post("/subscription/auto-renew")
+async def toggle_auto_renew(payload: dict):
+    device_id = payload.get("device_id")
+    auto_renew = payload.get("auto_renew", True)
+    if not device_id:
+        raise HTTPException(status_code=400, detail="device_id required")
+    await db.subscriptions.update_one(
+        {"device_id": device_id}, {"$set": {"auto_renew": bool(auto_renew)}}, upsert=True,
+    )
+    return {"ok": True, "auto_renew": bool(auto_renew)}
+
+@api_router.post("/subscription/cancel")
+async def cancel_subscription(payload: dict):
+    device_id = payload.get("device_id")
+    if not device_id:
+        raise HTTPException(status_code=400, detail="device_id required")
+    await db.subscriptions.update_one(
+        {"device_id": device_id}, {"$set": {"auto_renew": False, "status": "cancelled"}},
+    )
+    return {"ok": True}
+
+# ---- Admin dashboard (PIN-gated) ----
+@api_router.get("/admin/dashboard")
+async def admin_dashboard(pin: str = Query(...)):
+    expected = os.environ.get("ADMIN_PIN", "1234")
+    if pin != expected:
+        raise HTTPException(status_code=401, detail="Invalid PIN")
+    now = datetime.now(timezone.utc)
+    from datetime import timedelta
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    year_start = now.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    # Aggregate paid transactions
+    txs = await db.payment_transactions.find(
+        {"payment_status": "paid"}, {"_id": 0}
+    ).sort("created_at", -1).to_list(100)
+
+    month_rev = sum((t.get("amount", 0) for t in txs if t.get("created_at") and (t["created_at"].replace(tzinfo=timezone.utc) if t["created_at"].tzinfo is None else t["created_at"]) >= month_start), 0.0)
+    year_rev = sum((t.get("amount", 0) for t in txs if t.get("created_at") and (t["created_at"].replace(tzinfo=timezone.utc) if t["created_at"].tzinfo is None else t["created_at"]) >= year_start), 0.0)
+    total_rev = sum((t.get("amount", 0) for t in txs), 0.0)
+
+    active_subs = await db.subscriptions.count_documents({"expires_at": {"$gt": now}, "status": {"$ne": "expired"}})
+    total_subs = await db.subscriptions.count_documents({})
+
+    recent = []
+    for t in txs[:20]:
+        ca = t.get("created_at")
+        recent.append({
+            "amount": t.get("amount", 0),
+            "currency": t.get("currency", "gbp"),
+            "device_id": t.get("device_id"),
+            "plan_id": t.get("plan_id", "yearly_haulsafe"),
+            "created_at": ca.isoformat() if isinstance(ca, datetime) else str(ca),
+            "status": t.get("payment_status"),
+        })
+
+    return {
+        "month_revenue": round(month_rev, 2),
+        "year_revenue": round(year_rev, 2),
+        "total_revenue": round(total_rev, 2),
+        "active_subscribers": active_subs,
+        "total_subscribers": total_subs,
+        "recent_transactions": recent,
+        "currency": "gbp",
+    }
 
 @api_router.get("/payments/checkout/status/{session_id}")
 async def checkout_status(session_id: str, http_request: Request):

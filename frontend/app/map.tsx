@@ -742,7 +742,7 @@ export default function MapScreen() {
             </View>
             <Text style={styles.paywallTitle}>HaulSafe Pro</Text>
             <Text style={styles.paywallSub}>
-              Unlimited truck-aware routes, live road safety alerts, weather along the route, and auto-rerouting around low bridges & weight limits.
+              Unlimited truck-aware routes, live road safety alerts, weather along the route, and auto-rerouting around low bridges & weight limits.{"\n\n"}Auto-renews yearly · Cancel any time
             </Text>
             <View style={styles.paywallPriceBox}>
               <Text style={styles.paywallPrice}>£120</Text>

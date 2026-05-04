@@ -16,6 +16,8 @@ export default function RootLayout() {
         <Stack.Screen name="index" />
         <Stack.Screen name="profile" />
         <Stack.Screen name="map" />
+        <Stack.Screen name="success" />
+        <Stack.Screen name="admin" />
       </Stack>
     </SafeAreaProvider>
   );

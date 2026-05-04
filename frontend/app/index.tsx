@@ -161,4 +161,9 @@ const styles = StyleSheet.create({
   },
   secondaryBtn: { height: 48, alignItems: "center", justifyContent: "center" },
   secondaryBtnText: { color: "#8E8E93", fontSize: 14, fontWeight: "600" },
+  adminLink: {
+    flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 6,
+    height: 36,
+  },
+  adminLinkText: { color: "#48484A", fontSize: 12, fontWeight: "600" },
 });
